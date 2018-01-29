@@ -1,0 +1,200 @@
+---
+title: "Model"
+author: "Jz"
+output: pdf_document
+---
+
+```{r}
+data1 <- read.csv("train.csv", header = TRUE, na.strings = "NA")
+data2 <- read.csv("test.csv", header = TRUE, na.strings = "NA")
+data1 <- data1[, -1] #exclude id column
+dim(data1) #1460 rows, 80 variables
+set.seed(11)
+```
+
+
+```{r}
+library("lattice")
+densityplot(data1$SalePrice)
+#it seems like a normal distribution
+```
+```{r}
+#understand proportion of missing data
+missing <- function(x){
+sum(is.na(x))/length(x)
+}
+sort(sapply(data1, missing), decreasing = TRUE)[1:10]
+#visualize missing data
+library(VIM)
+missing_plot <- aggr(data1, col = c("blue", "red"),
+sortVars = TRUE, labels = names(data1),
+cex.axis = 0.7, gap = 3)
+```
+```{r}
+library(dplyr)
+data1 <- select(data1, -c(PoolQC, MiscFeature, Alley, Fence,
+FireplaceQu, LotFrontage))
+library(mice)
+#using cart
+imp_data <- mice(data1, m = 1, method = "cart", printFlag = FALSE)
+#because of large numbers of unbalanced factor variables, when they change to dummy vairables, there is high probability that one column is linear combination of the others, so we choose cart
+table(imp_data$imp$ GarageFinish)
+table(data1$ GarageFinish)
+densityplot(imp_data, ~ GarageFinish) #from pattern it is acceptable
+```
+
+```{r}
+full_data1 <- complete(imp_data)
+# then double check no missing data
+sort(sapply(full_data1, missing), decreasing = TRUE)[1:5] #no missing data
+```
+
+```{r}
+set.seed(11)
+train <- sample(1:nrow(full_data1), nrow(full_data1)/10*6)
+test <- -train
+traindata <- full_data1[train, ]
+testdata <- full_data1[test, ]
+ols_model <- lm(SalePrice ~., data = traindata)
+summary(ols_model)
+# adjusted R^2 = 92.6%, not bad; some vairables are have too big p-value
+ols_model_rmse <- sqrt(mean(ols_model$residuals ^2))
+ols_model_rmse #18975.6
+```
+
+```{r}
+ols_model2 <- lm(SalePrice ~ LotArea + OverallQual + OverallCond
++ YearBuilt + MasVnrArea + BsmtQual +BsmtFinSF1 +
+BsmtFinSF2 +BsmtUnfSF + X1stFlrSF + X2ndFlrSF +
+KitchenQual + KitchenAbvGr +BedroomAbvGr+
+GarageCars +PoolArea,
+data = traindata)
+summary(ols_model2)
+ols_model2_rmse <- sqrt(mean(ols_model2$residuals^2))
+ols_model2_rmse #30515.48, increases than the previous one
+```
+```{r}
+model.apply <- function(model, testdata){
+predict.test <- predict(model, testdata)
+SSE <- sum((testdata$SalePrice - predict.test)^2)
+SST <- sum((testdata$SalePrice -
+mean(testdata$SalePrice))^2)
+r.square <- 1-SSE/SST
+test.rmse <- sqrt(mean((testdata$SalePrice - predict.test)^2))
+par(mfrow = c(2,2))
+plot(model)
+return(c(r.square, test.rmse))
+}
+model.apply(ols_model2, testdata)
+#rmse 39337.00, is high but the model fit is good
+```
+
+```{r}
+library(car)
+vif(ols_model2) #check if there is one has vif >5
+# also check scatter plot
+pairs(~ OverallQual+ BsmtQual +BsmtFinSF1 +
+        BsmtFinSF2+GarageQual + GarageCond,
+        data = traindata)
+```
+
+```{r}
+ols_model3 <- lm(SalePrice ~ LotArea + OverallQual + OverallCond
+                 + YearBuilt +  BsmtQual +BsmtFinSF1 +
+                   BedroomAbvGr +X1stFlrSF +X2ndFlrSF
+                 +KitchenQual + KitchenAbvGr + PoolArea
+                 + OverallQual:GarageCars, data = traindata)
+summary(ols_model3)
+vif(ols_model3)
+model.apply(ols_model3, testdata)
+#r^2: 77.82% rmse:37264.96; seems much better
+```
+
+```{r}
+anova(ols_model2, ols_model3, test = "F")
+```
+```{r}
+library(dplyr)
+data2 <- select(data2, -c(PoolQC, MiscFeature, Alley, Fence,
+FireplaceQu, LotFrontage))
+library(mice)
+#using cart
+imp_data2 <- mice(data2, m = 1, method = "cart", printFlag = FALSE)
+table(imp_data2$imp$ GarageFinish)
+table(data2$ GarageFinish)
+densityplot(imp_data2, ~ GarageFinish) #from pattern it is acceptable
+full_data2 <- complete(imp_data2)
+# then double check no missing data
+sort(sapply(full_data2, missing), decreasing = TRUE)[1:5] #no missing data
+```
+
+```{r}
+which(is.na(full_data2$Utilities))
+full_data2$Utilities[c(456,486)] <- 'AllPub'
+missing(full_data2$Utilities)
+```
+
+```{r}
+full_data2no <- full_data2[, -1]
+data1_x <- full_data1[, -74]
+dim(data1_x)
+dim(full_data2no)
+comb <- rbind(data1_x, full_data2no)
+mat <- model.matrix(~., data = comb)[,-1]
+data1.matrix <- mat[1:1460,]
+data2.matrix <- mat[1461:2919, ]
+train.mat <- data1.matrix[train, ]
+test.mat <- data1.matrix[test, ]
+dim(mat)
+```
+
+```{r}
+y <- traindata$SalePrice
+#use package
+library(glmnet)
+ridge_model <- glmnet(train.mat, y, alpha = 0)
+plot(ridge_model, xvar = "lambda", label = TRUE)
+# this is just for [visualize]
+#this will give us the optimal lambda
+set.seed(11)
+ridge_model2 <- cv.glmnet(train.mat, y, alpha = 0)
+# cv.glmnet uses cross-validate to find lambda
+lambda <-ridge_model2$lambda.min
+lambda #20870.61
+```
+```{r}
+#what are the coeff?
+ridge_coe <-predict(ridge_model, train.mat, s = lambda,
+type = "coefficient")
+#then apply the model to test data
+y.test <- testdata$SalePrice
+ridge_y.test.predict <- predict(ridge_model, test.mat,
+                                s = lambda)
+ridge_model_rmse <- sqrt(mean((y.test - ridge_y.test.predict)^2))
+ridge_model_rmse #37093.79
+```
+
+Apply Lasso
+```{r}
+#same things here, first visualize
+lasso_model <- glmnet(train.mat, y, alpha = 1)
+plot(lasso_model, xvar = "lambda", label = TRUE)
+```
+```{r}
+set.seed(11)
+lasso_model2 <- cv.glmnet(train.mat, y, alpha = 1)
+lambda_lasso <- lasso_model2$lambda.min
+lasso_y.test.predict <- predict(lasso_model, newx = test.mat,
+                                s = lambda_lasso)
+lasso_model_rmse <- sqrt(mean((lasso_y.test.predict - y.test)^2))
+lasso_model_rmse #39717.59
+```
+
+Ridge gives the smallest rmse, use ridge to predict
+```{r}
+BestP<- data.frame(Id = data2$Id, 
+                       SalePrice =predict(ridge_model,
+                                          data2.matrix,
+                                           s = lambda))
+write.csv(BestP, "BestP.csv", row.names = FALSE)
+```
